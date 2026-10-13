@@ -1,11 +1,9 @@
 # PasspartoutPenDisplay
 
 A BepInEx 5 plugin for *Passpartout: The Starving Artist* (Steam, Windows) that opens a second
-Unity display on a monitor of your choice (meant for a pen display), fills it with black, and
-mirrors only the painting canvas and the tool palette onto it. The main monitor is unchanged.
-
-The canvas and palette appear on the pen display at exactly the same screen position as on the main
-monitor, so a pen mapped to the pen display paints where you see it.
+Unity display on a monitor of your choice (meant for a pen display), fills it with black, and shows
+only the painting canvas, enlarged to the display's full height, with the tool palette beside it.
+You paint and pick tools directly on the pen display. The main monitor is unchanged.
 
 ## Install
 
@@ -22,19 +20,26 @@ If fewer displays are connected than the index needs, the plugin logs a warning 
 
 ## Tablet mapping
 
-Map your pen display to itself (the normal full-monitor mapping in your tablet driver) and draw on it.
-The game reads pen input as pixel coordinates of the display the pen is on, and the plugin places the
-canvas and palette at the same pixel coordinates as on the main monitor, so strokes land where the
-pen is. For that to line up, the pen display should run at the same resolution as the main monitor.
+Map the pen display to itself, the normal full-monitor mapping in your tablet driver, and draw on it.
+Pen position is taken from Unity's own multi-display pointer API (the same one Unity UI uses for
+buttons on secondary displays), so monitors with different resolutions, aspect ratios and DPI
+settings are fine. If strokes still land in the wrong place, send the lines starting with
+`Display` and `Pointer on display` from `BepInEx/LogOutput.log`.
+
+## How it works
+
+- The canvas on the pen display is a `RawImage` showing the very RenderTexture the game paints into.
+- The palette is a copy of the game's tool panel. Clicks, toggles and slider drags on the copy are
+  forwarded to the game's real controls, and the copy takes its look from them every frame.
+- One Harmony prefix on `BrushTool.DrawUpdate` replaces the brush position with the pen's position
+  on the enlarged canvas whenever the pointer is on the pen display.
 
 ## Known limitations
 
-- The palette on the pen display is a display-only copy of the game's tool panel. It follows the
-  selected colour, the brush size and the selected tool, but not hover effects, the "new tool
-  unlocked" highlight, nor the greyed-out look of tools that are not unlocked yet.
-- The canvas and palette stay on the pen display while you are not painting, showing the last painting.
-- The mirror uses the main monitor's pixel layout; if the pen display has a different resolution, the
-  canvas is cut off or surrounded by more black, and pen input may be offset.
+- Hover effects, click sounds and the brush-size scroll wheel are not available on the pen display's palette.
+- The spray tool's stroke statistics (used for the painting's score, not for drawing) are computed
+  from the raw pointer position and are off for strokes made on the pen display.
+- The layout is fixed and made for a landscape pen display (16:9 or 16:10).
 - The second display opens at its native resolution and cannot be closed without quitting the game.
 
 ## Building
