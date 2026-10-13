@@ -4,8 +4,8 @@ A BepInEx 5 plugin for *Passpartout: The Starving Artist* (Steam, Windows) that 
 Unity display on a monitor of your choice (meant for a pen display), fills it with black, and
 mirrors only the painting canvas and the tool palette onto it. The main monitor is unchanged.
 
-The pen display is visual only. You keep painting on the main monitor; the second display just
-shows the canvas large, with the palette beside it.
+The canvas and palette appear on the pen display at exactly the same screen position as on the main
+monitor, so a pen mapped to the pen display paints where you see it.
 
 ## Install
 
@@ -22,10 +22,10 @@ If fewer displays are connected than the index needs, the plugin logs a warning 
 
 ## Tablet mapping
 
-Map your tablet's active area to the **painting canvas region on the main monitor** (in your tablet
-driver's mapping or screen-area setting), then look at the pen display while you draw. The canvas on
-the pen display is the same texture the game paints into, so strokes appear on both at once. Nothing
-is mapped on the pen display itself; it receives no input.
+Map your pen display to itself (the normal full-monitor mapping in your tablet driver) and draw on it.
+The game reads pen input as pixel coordinates of the display the pen is on, and the plugin places the
+canvas and palette at the same pixel coordinates as on the main monitor, so strokes land where the
+pen is. For that to line up, the pen display should run at the same resolution as the main monitor.
 
 ## Known limitations
 
@@ -33,8 +33,8 @@ is mapped on the pen display itself; it receives no input.
   selected colour, the brush size and the selected tool, but not hover effects, the "new tool
   unlocked" highlight, nor the greyed-out look of tools that are not unlocked yet.
 - The canvas and palette stay on the pen display while you are not painting, showing the last painting.
-- Layout is fixed: the canvas fills the pen display's height with the palette to its right, laid out
-  for a 16:9 or 16:10 landscape display.
+- The mirror uses the main monitor's pixel layout; if the pen display has a different resolution, the
+  canvas is cut off or surrounded by more black, and pen input may be offset.
 - The second display opens at its native resolution and cannot be closed without quitting the game.
 
 ## Building

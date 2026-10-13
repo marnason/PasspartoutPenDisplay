@@ -72,40 +72,34 @@ namespace PasspartoutPenDisplay
             var raw = painter.GetComponent<RawImage>();
             var toolPanel = raw.transform.parent.parent.Find("Tool Panel"); // PainterHolder/Tool Panel
 
+            // The game reads Input.mousePosition and maps it onto the main display's canvas in pixels. A pen on
+            // the second display reports coordinates relative to that display, so for pen input to land where the
+            // user sees it, everything must sit at exactly the same pixel coordinates as on the main display.
+            // Both canvases are Screen Space Overlay (world units = pixels) and this one has no CanvasScaler, so
+            // copying the originals' world transforms every frame gives a pixel-exact mirror.
             penRoot = new GameObject("PenDisplayCanvas");
             penRoot.SetActive(false);
             DontDestroyOnLoad(penRoot);
             var canvas = penRoot.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             canvas.targetDisplay = display;
-            var scaler = penRoot.AddComponent<CanvasScaler>();
-            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1920f, 1080f);
-            scaler.matchWidthOrHeight = 1f;
 
             // Painting: a RawImage showing the same RenderTexture the brushes paint into.
             var mirror = new GameObject("Painting").AddComponent<RawImage>();
             mirror.transform.SetParent(penRoot.transform, false);
-            var rt = mirror.rectTransform;
-            rt.sizeDelta = raw.rectTransform.rect.size;
-            rt.anchoredPosition = new Vector2(-230f, 0f);
-            rt.localScale = Vector3.one * (1000f / Mathf.Max(rt.sizeDelta.x, rt.sizeDelta.y));
-            rt.localRotation = raw.transform.rotation;
+            mirror.rectTransform.pivot = raw.rectTransform.pivot;
+            mirror.rectTransform.sizeDelta = raw.rectTransform.sizeDelta;
             mirror.texture = raw.texture;
             Event<RenderTexture>(painter, "renderTex").AddListener(t => mirror.texture = t);
-            toolPanel.Find("Flip Button").GetComponent<Button>().onClick
-                .AddListener(() => rt.localRotation = raw.transform.rotation);
+            mirror.gameObject.AddComponent<Follow>().source = raw.transform;
 
             // Palette: a copy of the game's Tool Panel with its game scripts removed, kept in sync by the
-            // same events the game uses. It is display-only; the pen display has no input.
+            // same events the game uses. Input goes to the game's own panel, which sits at the same place.
             var clone = Instantiate(toolPanel.gameObject, penRoot.transform);
             foreach (var mb in clone.GetComponentsInChildren<MonoBehaviour>(true))
                 if (mb.GetType().Assembly != typeof(Graphic).Assembly) DestroyImmediate(mb);
             foreach (var s in clone.GetComponentsInChildren<Selectable>(true)) s.interactable = true;
-            var prt = (RectTransform)clone.transform;
-            prt.anchorMin = prt.anchorMax = prt.pivot = new Vector2(0.5f, 0.5f);
-            prt.anchoredPosition = new Vector2(560f, 0f);
-            prt.localScale = Vector3.one;
+            clone.AddComponent<Follow>().source = toolPanel;
 
             var toggles = toolPanel.GetComponentsInChildren<Toggle>(true);
             var cloneToggles = clone.GetComponentsInChildren<Toggle>(true);
@@ -125,6 +119,19 @@ namespace PasspartoutPenDisplay
             });
 
             penRoot.SetActive(true);
+        }
+
+        private class Follow : MonoBehaviour
+        {
+            public Transform source;
+
+            private void LateUpdate()
+            {
+                if (source == null) return;
+                transform.position = source.position;
+                transform.rotation = source.rotation;
+                transform.localScale = source.lossyScale;
+            }
         }
 
         // CanvasPainter exposes ObservableValue<T> properties, which derive from UnityEvent<T>.
