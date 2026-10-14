@@ -26,8 +26,9 @@ display, both from the same Windows API in the same DPI context, give the pen's 
 of that window. Nothing depends on resolutions, aspect ratios, DPI scaling or monitor arrangement.
 The game's own brush cursor follows the pen on the pen display.
 
-If the pen feels laggy, turn off "Use Windows Ink" for the pen in the tablet driver, so the pen reaches
-the game as a plain mouse.
+With Windows Ink, Windows normally holds back a pen touch for a moment to see whether it is a
+press-and-hold right-click, which loses the first millimetres of every stroke. The plugin switches
+that wait off for the game's windows, so strokes start the instant the pen touches the display.
 
 ## How it works
 
@@ -46,6 +47,9 @@ the game as a plain mouse.
   position, which has no meaning on the pen display. A transpiler on `SprayBrushTool.OnDrawUpdate`
   feeds it the main-display pointer position that corresponds to the pen's brush point, so scores
   come out the same whichever display you paint on. The other tools already record from the canvas point.
+- Windows Ink's press-and-hold and flick gestures are disabled for both game windows through the
+  `MicrosoftTabletPenServiceProperty` window property, the switch Microsoft documents for this
+  purpose, so a pen touch reaches the game as a mouse press immediately.
 - With two displays, VSync waits for both monitors' refreshes and stalls periodically (Unity issue
   UUM-40440, closed as a hardware limitation). The plugin turns VSync off and caps the frame rate at
   the main monitor's refresh rate instead. The VSync setting in the game's options menu has no effect

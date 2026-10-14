@@ -67,6 +67,7 @@ namespace PasspartoutPenDisplay
             yield return null;
             mainWindow = FindUnityWindow(IntPtr.Zero); // before the second display exists, the only Unity window is the main one
             if (mainWindow == IntPtr.Zero) Logger.LogWarning("Could not find the game's main window; pen input on the pen display will not work.");
+            else DisablePenGestures(mainWindow);
             Display.displays[display].Activate();
             for (int i = 0; i < Display.displays.Length; i++)
             {
@@ -305,6 +306,7 @@ namespace PasspartoutPenDisplay
             {
                 penWindow = FindUnityWindow(mainWindow);
                 if (penWindow == IntPtr.Zero) return null;
+                DisablePenGestures(penWindow);
                 Log.LogInfo($"Pen display window 0x{penWindow.ToInt64():X}; main window 0x{mainWindow.ToInt64():X}.");
             }
             Win32.GetCursorPos(out var p);
@@ -318,6 +320,21 @@ namespace PasspartoutPenDisplay
                 Log.LogInfo($"Pointer on pen display: client ({p.x},{p.y}) of {c.right}x{c.bottom} -> {n}.");
             }
             return n;
+        }
+
+        // With Windows Ink, a pen touch is not reported as a mouse button press until Windows has decided it is not a
+        // press-and-hold (right-click), so the first millimetres of every stroke were lost. This window property tells
+        // the pen service to skip that wait, and the flick gestures, for the given window (see the Tpcshrd.h docs).
+        private static void DisablePenGestures(IntPtr hwnd)
+        {
+            const string property = "MicrosoftTabletPenServiceProperty";
+            const int flags = 0x00000001  // TABLET_DISABLE_PRESSANDHOLD
+                            | 0x00000008  // TABLET_DISABLE_PENTAPFEEDBACK
+                            | 0x00000010  // TABLET_DISABLE_PENBARRELFEEDBACK
+                            | 0x00010000; // TABLET_DISABLE_FLICKS
+            ushort atom = Win32.GlobalAddAtom(property);
+            Win32.SetProp(hwnd, property, (IntPtr)flags);
+            Win32.GlobalDeleteAtom(atom);
         }
 
         // A visible top-level Unity player window of this process other than `except`.
@@ -367,6 +384,9 @@ namespace PasspartoutPenDisplay
             [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
             [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hwnd);
             [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, StringBuilder s, int n);
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool SetProp(IntPtr hwnd, string name, IntPtr data);
+            [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern ushort GlobalAddAtom(string name);
+            [DllImport("kernel32.dll")] public static extern ushort GlobalDeleteAtom(ushort atom);
         }
     }
 }
