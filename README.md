@@ -34,14 +34,3 @@ With a Wacom pen display:
 
 This changes the setting for Passpartout only. Other programs keep using Windows Ink as before.
 Huion, XP-Pen and Gaomon drivers have the same checkbox; some of them per program as well.
-
-## Good to know
-
-- Buttons on the pen display do not highlight when the pen hovers over them, and make no click sound.
-- The second monitor stays on, showing the last painting, until you quit the game.
-- The mod turns off VSync while it runs, which may show slight tearing when the camera pans on the
-  main monitor.
-
-## License
-
-CC0 1.0. Do whatever you like with it.
