@@ -24,10 +24,10 @@ Map the pen display to itself, the normal full-monitor mapping in your tablet dr
 The pen position is asked of Windows directly: the cursor position and the game's window on the pen
 display, both from the same Windows API in the same DPI context, give the pen's position as a fraction
 of that window. Nothing depends on resolutions, aspect ratios, DPI scaling or monitor arrangement.
-A ring on the pen display shows the exact spot the game will paint at for the current pen position.
+The game's own brush cursor follows the pen on the pen display.
 
-If strokes still land away from the ring, or the ring away from the pen, send the lines containing
-`Display`, `Pen display window`, `Pointer on pen display` and `Pen mapping` from `BepInEx/LogOutput.log`.
+If the pen feels laggy, turn off "Use Windows Ink" for the pen in the tablet driver, so the pen reaches
+the game as a plain mouse.
 
 ## How it works
 
@@ -39,12 +39,22 @@ If strokes still land away from the ring, or the ring away from the pen, send th
   `Display.RelativeMouseAt` gives Unity UI the same answer for the palette's buttons and slider.
   Both use `GetCursorPos`, `ScreenToClient` and `GetClientRect` from `user32.dll` against the Unity
   window on the pen display, not Unity's own multi-display bookkeeping.
+- The game sets its brush cursor as a software cursor every frame, and Unity draws software cursors
+  at the wrong place on a second display. A prefix on `Cursor.SetCursor` draws that same cursor
+  texture at the pen instead and hands Unity a blank one while the pen is on the pen display.
+- The spray tool records stroke statistics (used for the painting's score) from the raw pointer
+  position, which has no meaning on the pen display. A transpiler on `SprayBrushTool.OnDrawUpdate`
+  feeds it the main-display pointer position that corresponds to the pen's brush point, so scores
+  come out the same whichever display you paint on. The other tools already record from the canvas point.
+- With two displays, VSync waits for both monitors' refreshes and stalls periodically (Unity issue
+  UUM-40440, closed as a hardware limitation). The plugin turns VSync off and caps the frame rate at
+  the main monitor's refresh rate instead. The VSync setting in the game's options menu has no effect
+  while the plugin is active.
 
 ## Known limitations
 
-- Hover effects, click sounds and the brush-size scroll wheel are not available on the pen display's palette.
-- The spray tool's stroke statistics (used for the painting's score, not for drawing) are computed
-  from the raw pointer position and are off for strokes made on the pen display.
+- Hover effects and click sounds are not available on the pen display's palette.
+- VSync is forced off, so camera pans on the main monitor may show tearing.
 - The layout is fixed and made for a landscape pen display (16:9 or 16:10).
 - The second display opens at its native resolution and cannot be closed without quitting the game.
 

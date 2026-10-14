@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 using BepInEx;
@@ -16,13 +17,14 @@ namespace PasspartoutPenDisplay
     {
         private static ManualLogSource Log;
         private static int display;
-        private static Canvas penCanvas;
-        private static RawImage original; // the game's painting RawImage (the one with CanvasPainter)
-        private static RawImage mirror;   // our copy of it on the pen display
-        private static RectTransform ring; // where the game will paint, drawn on the pen display
-        private static float brushSize = 1f;
+        private static RectTransform penCanvas;
+        private static RawImage original;  // the game's painting RawImage (the one with CanvasPainter)
+        private static RawImage mirror;    // our copy of it on the pen display
+        private static RawImage penCursor; // the game's brush cursor, drawn by us on the pen display
+        private static Texture2D blank;
+        private static Vector2? penPoint;  // this frame's brush point on the game's canvas, when the pen is on the pen display
         private static IntPtr mainWindow, penWindow;
-        private static bool osInputBroken, loggedPen, loggedOs;
+        private static bool loggedPen;
 
         private Component painter;
         private GameObject penRoot;
@@ -37,6 +39,26 @@ namespace PasspartoutPenDisplay
                 Logger.LogWarning($"PenDisplayIndex is {display} but only {Display.displays.Length} display(s) were found; doing nothing.");
                 return;
             }
+
+            var harmony = new Harmony(PluginInfo.PLUGIN_GUID);
+            var brushTool = AccessTools.TypeByName("BrushTool");
+            var sprayTool = AccessTools.TypeByName("SprayBrushTool");
+            if (brushTool == null || sprayTool == null)
+            {
+                Logger.LogError("BrushTool or SprayBrushTool not found; doing nothing.");
+                return;
+            }
+            harmony.Patch(AccessTools.Method(brushTool, "DrawUpdate"), new HarmonyMethod(typeof(Plugin), nameof(RemapPenPosition)));
+            harmony.Patch(AccessTools.Method(sprayTool, "OnDrawUpdate"), transpiler: new HarmonyMethod(typeof(Plugin), nameof(SprayPointerTranspiler)));
+            harmony.Patch(AccessTools.Method(typeof(Cursor), nameof(Cursor.SetCursor), new[] { typeof(Texture2D), typeof(Vector2), typeof(CursorMode) }),
+                new HarmonyMethod(typeof(Plugin), nameof(DrawCursorOnPenDisplay)));
+            harmony.Patch(AccessTools.Method(typeof(Display), nameof(Display.RelativeMouseAt)),
+                new HarmonyMethod(typeof(Plugin), nameof(RelativeMouseAtPrefix)));
+
+            blank = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+            blank.SetPixel(0, 0, Color.clear);
+            blank.Apply();
+
             StartCoroutine(Run());
         }
 
@@ -44,11 +66,7 @@ namespace PasspartoutPenDisplay
         {
             yield return null;
             mainWindow = FindUnityWindow(IntPtr.Zero); // before the second display exists, the only Unity window is the main one
-            if (mainWindow == IntPtr.Zero)
-            {
-                osInputBroken = true;
-                Logger.LogWarning("Could not find the game's main window; falling back to Unity's own multi-display pointer.");
-            }
+            if (mainWindow == IntPtr.Zero) Logger.LogWarning("Could not find the game's main window; pen input on the pen display will not work.");
             Display.displays[display].Activate();
             for (int i = 0; i < Display.displays.Length; i++)
             {
@@ -56,21 +74,18 @@ namespace PasspartoutPenDisplay
                 Logger.LogInfo($"Display {i}: system {d.systemWidth}x{d.systemHeight}, rendering {d.renderingWidth}x{d.renderingHeight}, active {d.active}");
             }
 
+            // With two displays, VSync waits for both monitors' refreshes and stalls periodically (Unity issue UUM-40440),
+            // so cap the frame rate at the main monitor's refresh rate instead.
+            QualitySettings.vSyncCount = 0;
+            int hz = Screen.currentResolution.refreshRate;
+            Application.targetFrameRate = hz > 0 ? hz : -1;
+
             var cam = new GameObject("PenDisplayCamera").AddComponent<Camera>();
             DontDestroyOnLoad(cam.gameObject);
             cam.targetDisplay = display;
             cam.clearFlags = CameraClearFlags.SolidColor;
             cam.backgroundColor = Color.black;
             cam.cullingMask = 0;
-
-            var harmony = new Harmony(PluginInfo.PLUGIN_GUID);
-            harmony.Patch(AccessTools.Method(typeof(Display), nameof(Display.RelativeMouseAt)),
-                new HarmonyMethod(typeof(Plugin), nameof(RelativeMouseAtPrefix)));
-            var drawUpdate = AccessTools.Method(AccessTools.TypeByName("BrushTool"), "DrawUpdate");
-            if (drawUpdate != null)
-                harmony.Patch(drawUpdate, new HarmonyMethod(typeof(Plugin), nameof(RemapPenPosition)));
-            else
-                Logger.LogError("BrushTool.DrawUpdate not found; pen input on the pen display will not be remapped.");
 
             // The painting UI lives in a DontDestroyOnLoad prefab that is loaded asynchronously at startup,
             // so poll until it exists (and again if it ever goes away).
@@ -109,9 +124,10 @@ namespace PasspartoutPenDisplay
             penRoot = new GameObject("PenDisplayCanvas");
             penRoot.SetActive(false);
             DontDestroyOnLoad(penRoot);
-            penCanvas = penRoot.AddComponent<Canvas>();
-            penCanvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            penCanvas.targetDisplay = display;
+            var canvas = penRoot.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            canvas.targetDisplay = display;
+            penCanvas = (RectTransform)penRoot.transform;
             var scaler = penRoot.AddComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
             scaler.referenceResolution = new Vector2(1920f, 1080f);
@@ -128,16 +144,6 @@ namespace PasspartoutPenDisplay
             rt.anchoredPosition = new Vector2(-230f, 0f);
             rt.localScale = Vector3.one * (1000f / Mathf.Max(rt.sizeDelta.x, rt.sizeDelta.y));
             Instantiate(original.transform.Find("Rim"), mirror.transform); // the frame around the canvas
-
-            // Brush ring: shows where the game will paint for the current pen position.
-            var ringImage = new GameObject("PenCursor").AddComponent<RawImage>();
-            ringImage.transform.SetParent(mirror.transform, false);
-            ringImage.raycastTarget = false;
-            ringImage.texture = RingTexture();
-            ring = ringImage.rectTransform;
-            ringImage.enabled = false;
-            Event<float>(painter, "brushSize").AddListener(s => brushSize = s);
-            brushSize = (float)Event<float>(painter, "brushSize").GetType().GetProperty("Value").GetValue(Event<float>(painter, "brushSize"), null);
 
             // Palette: a copy of the game's Tool Panel. Input on the copy is forwarded to the original controls, so all
             // game logic runs on the originals; the copy's visual state is taken from the originals every frame.
@@ -174,6 +180,12 @@ namespace PasspartoutPenDisplay
                 }
             });
 
+            // Cursor: drawn last so it is on top of everything.
+            penCursor = new GameObject("Cursor").AddComponent<RawImage>();
+            penCursor.transform.SetParent(penRoot.transform, false);
+            penCursor.raycastTarget = false;
+            penCursor.enabled = false;
+
             var transforms = Pairs<Transform>(toolPanel, clone);
             var images = Pairs<Image>(toolPanel, clone);
             var outlines = Pairs<Outline>(toolPanel, clone);
@@ -182,10 +194,12 @@ namespace PasspartoutPenDisplay
             penRoot.AddComponent<Sync>().action = () =>
             {
                 if (original == null) return;
+                if (QualitySettings.vSyncCount != 0) QualitySettings.vSyncCount = 0; // the game's options menu can turn it back on
                 bool show = original.gameObject.activeInHierarchy; // only while painting
                 mirror.enabled = show;
                 mirror.texture = original.texture;
-                mirror.rectTransform.localRotation = original.transform.rotation; // portrait or landscape
+                if (mirror.rectTransform.localRotation != original.transform.rotation)
+                    mirror.rectTransform.localRotation = original.transform.rotation; // portrait or landscape
                 clone.SetActive(show);
                 for (int i = 1; i < transforms.o.Length; i++) transforms.c[i].gameObject.SetActive(transforms.o[i].gameObject.activeSelf);
                 for (int i = 0; i < images.o.Length; i++)
@@ -212,32 +226,54 @@ namespace PasspartoutPenDisplay
         // pen's position on our copy of the canvas, whose local units are the original canvas's units.
         private static void RemapPenPosition(ref Vector2 canvasMousePos)
         {
-            var ringImage = ring == null ? null : ring.GetComponent<RawImage>();
+            penPoint = null;
             if (mirror == null || !mirror.enabled) return;
             var n = PenNormalized();
-            if (n == null) { if (ringImage) ringImage.enabled = false; return; }
+            if (n == null) return;
+            Vector2 local = mirror.rectTransform.InverseTransformPoint(PenWorld(n.Value)); // relative to the mirror's pivot (its centre)
+            canvasMousePos = local + Vector2.Scale(mirror.rectTransform.pivot - original.rectTransform.pivot, original.rectTransform.rect.size);
+            penPoint = canvasMousePos;
+        }
 
-            var corners = new Vector3[4];
-            penCanvas.GetComponent<RectTransform>().GetWorldCorners(corners); // 0 = bottom-left, 2 = top-right
-            var world = new Vector3(corners[0].x + n.Value.x * (corners[2].x - corners[0].x),
-                                    corners[0].y + n.Value.y * (corners[2].y - corners[0].y), corners[0].z);
-            Vector2 local = mirror.rectTransform.InverseTransformPoint(world); // relative to the mirror's pivot (its centre)
-            var mapped = local + Vector2.Scale(mirror.rectTransform.pivot - original.rectTransform.pivot, original.rectTransform.rect.size);
-
-            ringImage.enabled = true;
-            ring.anchoredPosition = local;
-            ring.sizeDelta = Vector2.one * (brushSize * 2f + 4f);
-
-            if (!loggedPen)
+        // Harmony transpiler for SprayBrushTool.OnDrawUpdate, which records stroke statistics (used for the painting's
+        // score) from Input.mousePosition rather than from the canvas point. Give it the main-display pointer position
+        // that corresponds to the pen's brush point, so the statistics come out the same on either display.
+        private static IEnumerable<CodeInstruction> SprayPointerTranspiler(IEnumerable<CodeInstruction> instructions)
+        {
+            var mousePosition = AccessTools.PropertyGetter(typeof(Input), nameof(Input.mousePosition));
+            var replacement = AccessTools.Method(typeof(Plugin), nameof(MainDisplayPointer));
+            foreach (var instruction in instructions)
             {
-                loggedPen = true;
-                var m = new Vector3[4];
-                mirror.rectTransform.GetWorldCorners(m);
-                Log.LogInfo($"Pen mapping: normalized {n.Value} -> canvas world {world} (canvas corners {corners[0]}..{corners[2]}, " +
-                            $"mirror corners {m[0]}..{m[2]}) -> local {local} -> brush point {mapped} of {original.rectTransform.rect.size}; " +
-                            $"game's own point was {canvasMousePos}");
+                if (instruction.Calls(mousePosition)) instruction.operand = replacement;
+                yield return instruction;
             }
-            canvasMousePos = mapped;
+        }
+
+        private static Vector3 MainDisplayPointer() =>
+            penPoint == null ? Input.mousePosition : original.rectTransform.TransformPoint(penPoint.Value);
+
+        // Harmony prefix for Cursor.SetCursor. The game sets its brush cursor as a software cursor every frame while
+        // painting, and Unity draws software cursors at the wrong place on a secondary display. When the pen is on the
+        // pen display, draw that cursor texture ourselves at the pen and give Unity a blank one. Hardware cursors
+        // (CursorMode.Auto) are positioned by Windows and need no help.
+        private static void DrawCursorOnPenDisplay(ref Texture2D texture, ref Vector2 hotspot, CursorMode cursorMode)
+        {
+            if (penCursor == null || original == null) return;
+            var n = cursorMode == CursorMode.ForceSoftware && texture != null ? PenNormalized() : null;
+            if (n == null)
+            {
+                penCursor.enabled = false;
+                return;
+            }
+            var rt = penCursor.rectTransform;
+            penCursor.texture = texture;
+            rt.pivot = new Vector2(hotspot.x / texture.width, 1f - hotspot.y / texture.height); // hotspot is from the top-left
+            // One cursor texel is one main-display pixel; show it at the mirror's magnification.
+            rt.sizeDelta = new Vector2(texture.width, texture.height) * (mirror.transform.localScale.x / original.canvas.scaleFactor);
+            rt.position = PenWorld(n.Value);
+            penCursor.enabled = true;
+            texture = blank;
+            hotspot = Vector2.zero;
         }
 
         // Harmony prefix for Display.RelativeMouseAt: Unity UI (the palette copy's buttons and slider) asks it where the
@@ -251,55 +287,37 @@ namespace PasspartoutPenDisplay
             return false;
         }
 
+        // A point given as a fraction of the pen display, in the pen canvas's world space (its pixels).
+        private static Vector3 PenWorld(Vector2 n)
+        {
+            var r = penCanvas.rect;
+            return penCanvas.TransformPoint(r.xMin + n.x * r.width, r.yMin + n.y * r.height, 0f);
+        }
+
         // Where the pointer is inside Unity's window on the pen display, as a fraction of that window's client area
         // (x to the right, y upwards, both 0..1), or null when it is not over that window. Asked of Windows directly:
         // the cursor position and the window's client rectangle come from the same API in the same DPI context, so the
         // fraction is right whatever the monitors' resolutions, scaling factors or arrangement.
         private static Vector2? PenNormalized()
         {
-            if (osInputBroken) return UnityFallback();
-            try
+            if (mainWindow == IntPtr.Zero) return null;
+            if (penWindow == IntPtr.Zero || !Win32.IsWindow(penWindow))
             {
-                if (penWindow == IntPtr.Zero || !Win32.IsWindow(penWindow))
-                {
-                    penWindow = FindUnityWindow(mainWindow);
-                    if (penWindow == IntPtr.Zero) return null;
-                    Win32.GetClientRect(penWindow, out var r);
-                    var d = Display.displays[display];
-                    Log.LogInfo($"Pen display window 0x{penWindow.ToInt64():X} (client {r.right}x{r.bottom}, Unity renders {d.renderingWidth}x{d.renderingHeight}); main window 0x{mainWindow.ToInt64():X}.");
-                }
-                Win32.GetCursorPos(out var p);
-                var screen = p;
-                Win32.ScreenToClient(penWindow, ref p);
-                Win32.GetClientRect(penWindow, out var c);
-                if (c.right <= 0 || c.bottom <= 0 || p.x < 0 || p.y < 0 || p.x >= c.right || p.y >= c.bottom) return null;
-                var n = new Vector2((p.x + 0.5f) / c.right, 1f - (p.y + 0.5f) / c.bottom);
-                if (!loggedOs)
-                {
-                    loggedOs = true;
-                    int rx = 0, ry = 0;
-                    var args = new object[] { (int)Input.mousePosition.x, (int)Input.mousePosition.y, rx, ry };
-                    int z = (int)AccessTools.Method(typeof(Display), "RelativeMouseAtImpl").Invoke(null, args);
-                    Log.LogInfo($"Pointer on pen display: OS cursor ({screen.x},{screen.y}) = client ({p.x},{p.y}) of {c.right}x{c.bottom} -> normalized {n}; " +
-                                $"Unity says mousePosition {Input.mousePosition}, RelativeMouseAt ({args[2]},{args[3]}) on display {z}.");
-                }
-                return n;
+                penWindow = FindUnityWindow(mainWindow);
+                if (penWindow == IntPtr.Zero) return null;
+                Log.LogInfo($"Pen display window 0x{penWindow.ToInt64():X}; main window 0x{mainWindow.ToInt64():X}.");
             }
-            catch (Exception e)
+            Win32.GetCursorPos(out var p);
+            Win32.ScreenToClient(penWindow, ref p);
+            Win32.GetClientRect(penWindow, out var c);
+            if (c.right <= 0 || c.bottom <= 0 || p.x < 0 || p.y < 0 || p.x >= c.right || p.y >= c.bottom) return null;
+            var n = new Vector2((p.x + 0.5f) / c.right, 1f - (p.y + 0.5f) / c.bottom);
+            if (!loggedPen)
             {
-                osInputBroken = true;
-                Log.LogError($"Cannot read the pointer from Windows ({e.GetType().Name}: {e.Message}); falling back to Unity's own multi-display pointer.");
-                return UnityFallback();
+                loggedPen = true;
+                Log.LogInfo($"Pointer on pen display: client ({p.x},{p.y}) of {c.right}x{c.bottom} -> {n}.");
             }
-        }
-
-        private static Vector2? UnityFallback()
-        {
-            int rx = 0, ry = 0;
-            var args = new object[] { (int)Input.mousePosition.x, (int)Input.mousePosition.y, rx, ry };
-            if ((int)AccessTools.Method(typeof(Display), "RelativeMouseAtImpl").Invoke(null, args) != display) return null;
-            var d = Display.displays[display];
-            return new Vector2((int)args[2] / (float)d.systemWidth, (int)args[3] / (float)d.systemHeight);
+            return n;
         }
 
         // A visible top-level Unity player window of this process other than `except`.
@@ -320,26 +338,6 @@ namespace PasspartoutPenDisplay
             }, IntPtr.Zero);
             return found;
         }
-
-        private static Texture2D RingTexture()
-        {
-            const int n = 64; const float c = (n - 1) / 2f;
-            var t = new Texture2D(n, n, TextureFormat.RGBA32, false);
-            for (int y = 0; y < n; y++)
-                for (int x = 0; x < n; x++)
-                {
-                    float d = Mathf.Sqrt((x - c) * (x - c) + (y - c) * (y - c));
-                    float white = Mathf.Clamp01(1.5f - Mathf.Abs(d - 28f));
-                    float black = Mathf.Clamp01(1.5f - Mathf.Abs(d - 30f));
-                    t.SetPixel(x, y, new Color(white, white, white, Mathf.Max(white, black)));
-                }
-            t.Apply();
-            return t;
-        }
-
-        // CanvasPainter exposes ObservableValue<T> properties, which derive from UnityEvent<T>.
-        private static UnityEngine.Events.UnityEvent<T> Event<T>(Component c, string property) =>
-            (UnityEngine.Events.UnityEvent<T>)c.GetType().GetProperty(property).GetValue(c, null);
 
         private static (T[] o, T[] c) Pairs<T>(Component original, GameObject copy) where T : Component =>
             (original.GetComponentsInChildren<T>(true), copy.GetComponentsInChildren<T>(true));
