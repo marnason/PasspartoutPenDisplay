@@ -24,6 +24,8 @@ namespace PasspartoutPenDisplay
         private static Texture2D blank;
         private static Vector2? penPoint;  // this frame's brush point on the game's canvas, when the pen is on the pen display
         private static IntPtr mainWindow, penWindow;
+        private static int penFrame = -1;  // frame for which penCache holds the pointer sample
+        private static Vector2? penCache;
         private static bool loggedPen;
 
         private Component painter;
@@ -198,11 +200,12 @@ namespace PasspartoutPenDisplay
                 if (QualitySettings.vSyncCount != 0) QualitySettings.vSyncCount = 0; // the game's options menu can turn it back on
                 bool show = original.gameObject.activeInHierarchy; // only while painting
                 mirror.enabled = show;
+                clone.SetActive(show);
+                if (!show) return;
                 mirror.texture = original.texture;
                 if (mirror.rectTransform.localRotation != original.transform.rotation)
                     mirror.rectTransform.localRotation = original.transform.rotation; // portrait or landscape
-                clone.SetActive(show);
-                for (int i = 1; i < transforms.o.Length; i++) transforms.c[i].gameObject.SetActive(transforms.o[i].gameObject.activeSelf);
+                for (int i = 1; i < transforms.o.Length; i++) transforms.c[i].gameObject.SetActive(transforms.o[i].gameObject.activeSelf); // 0 is the panel itself
                 for (int i = 0; i < images.o.Length; i++)
                 {
                     images.c[i].sprite = images.o[i].sprite;
@@ -298,8 +301,19 @@ namespace PasspartoutPenDisplay
         // Where the pointer is inside Unity's window on the pen display, as a fraction of that window's client area
         // (x to the right, y upwards, both 0..1), or null when it is not over that window. Asked of Windows directly:
         // the cursor position and the window's client rectangle come from the same API in the same DPI context, so the
-        // fraction is right whatever the monitors' resolutions, scaling factors or arrangement.
+        // fraction is right whatever the monitors' resolutions, scaling factors or arrangement. Sampled once per frame,
+        // so the brush, the cursor and the palette all see the same point.
         private static Vector2? PenNormalized()
+        {
+            if (penFrame != Time.frameCount)
+            {
+                penFrame = Time.frameCount;
+                penCache = ReadPen();
+            }
+            return penCache;
+        }
+
+        private static Vector2? ReadPen()
         {
             if (mainWindow == IntPtr.Zero) return null;
             if (penWindow == IntPtr.Zero || !Win32.IsWindow(penWindow))

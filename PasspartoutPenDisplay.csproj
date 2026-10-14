@@ -4,7 +4,7 @@
     <TargetFramework>netstandard2.0</TargetFramework>
     <AssemblyName>PasspartoutPenDisplay</AssemblyName>
     <Description>Mirrors the Passpartout painting canvas and tool palette onto a second display</Description>
-    <Version>0.6.0</Version>
+    <Version>1.0.0</Version>
     <LangVersion>latest</LangVersion>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
     <!-- Game install; only used to pick up UnityEngine.UI.dll when present. CI falls back to NuGet. -->
