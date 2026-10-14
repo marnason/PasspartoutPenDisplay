@@ -21,18 +21,24 @@ If fewer displays are connected than the index needs, the plugin logs a warning 
 ## Tablet mapping
 
 Map the pen display to itself, the normal full-monitor mapping in your tablet driver, and draw on it.
-Pen position is taken from Unity's own multi-display pointer API (the same one Unity UI uses for
-buttons on secondary displays), so monitors with different resolutions, aspect ratios and DPI
-settings are fine. If strokes still land in the wrong place, send the lines starting with
-`Display` and `Pointer on display` from `BepInEx/LogOutput.log`.
+The pen position is asked of Windows directly: the cursor position and the game's window on the pen
+display, both from the same Windows API in the same DPI context, give the pen's position as a fraction
+of that window. Nothing depends on resolutions, aspect ratios, DPI scaling or monitor arrangement.
+A ring on the pen display shows the exact spot the game will paint at for the current pen position.
+
+If strokes still land away from the ring, or the ring away from the pen, send the lines containing
+`Display`, `Pen display window`, `Pointer on pen display` and `Pen mapping` from `BepInEx/LogOutput.log`.
 
 ## How it works
 
 - The canvas on the pen display is a `RawImage` showing the very RenderTexture the game paints into.
 - The palette is a copy of the game's tool panel. Clicks, toggles and slider drags on the copy are
   forwarded to the game's real controls, and the copy takes its look from them every frame.
-- One Harmony prefix on `BrushTool.DrawUpdate` replaces the brush position with the pen's position
-  on the enlarged canvas whenever the pointer is on the pen display.
+- A Harmony prefix on `BrushTool.DrawUpdate` replaces the brush position with the pen's position
+  on the enlarged canvas whenever the pointer is on the pen display, and a prefix on
+  `Display.RelativeMouseAt` gives Unity UI the same answer for the palette's buttons and slider.
+  Both use `GetCursorPos`, `ScreenToClient` and `GetClientRect` from `user32.dll` against the Unity
+  window on the pen display, not Unity's own multi-display bookkeeping.
 
 ## Known limitations
 
